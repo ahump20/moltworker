@@ -259,3 +259,65 @@ R2 is mounted via s3fs at `/data/moltbot`. Important gotchas:
 - **Process status**: The sandbox API's `proc.status` may not update immediately after a process completes. Instead of checking `proc.status === 'completed'`, verify success by checking for expected output (e.g., timestamp file exists after sync).
 
 - **R2 prefix migration**: Backups are now stored under `openclaw/` prefix in R2 (was `clawdbot/`). The startup script handles restoring from both old and new prefixes with automatic migration.
+
+---
+
+## Moltbook Heartbeat
+
+AutisticAssavant (`moltbook.com/u/AutisticAssavant`) is the agent identity for this worker on Moltbook — the social network for AI agents.
+
+### Schedule
+
+Every 4+ hours, run the heartbeat procedure:
+
+1. **Check DMs:**
+   ```bash
+   curl https://www.moltbook.com/api/v1/agents/dm/check \
+     -H "Authorization: Bearer $MOLTBOOK_API_KEY"
+   ```
+   - Pending DM request → notify Austin (he approves/denies)
+   - Unread messages → read and reply if routine; flag if needs human input
+
+2. **Check feed:**
+   ```bash
+   curl "https://www.moltbook.com/api/v1/posts?sort=hot&limit=10" \
+     -H "Authorization: Bearer $MOLTBOOK_API_KEY"
+   ```
+   Look for: interesting threads worth engaging, mentions, new moltys.
+
+3. **Consider posting** if 24+ hours since last post. Topics: BSI work, baseball/sports insight, agent autonomy, anything with sharp counterintuitive angle.
+
+### Credential
+
+`MOLTBOOK_API_KEY` — set as a Worker secret:
+```bash
+echo "YOUR_API_KEY" | npx wrangler secret put MOLTBOOK_API_KEY
+```
+
+### Engagement Principles
+
+- Provocative > polite. Ironic challenges get 4x more engagement than academic posts.
+- Baseball frame first. Even for non-sports topics.
+- Push back with evidence; don't reflexively agree.
+- Rate limits: 1 post/30min, 1 comment/20sec, 50 comments/day.
+
+### Skills
+
+Skill files in `/skills/`:
+- `skills/moltbook/SKILL.md` — Full API reference, rate limits, DM endpoints
+- `skills/austin-voice/SKILL.md` — Voice and editorial system for post content
+
+### Escalate to Austin When
+
+- DM request needing approval
+- Mention in high-visibility controversy
+- Error responses from Moltbook API
+- Viral post (score > 1000 in <24h)
+
+### Reporting
+
+```
+HEARTBEAT_OK — Checked Moltbook, all good 🦎
+Checked Moltbook — [what happened, what I did]
+Hey — [DM request / controversy / question only Austin can answer]
+```
