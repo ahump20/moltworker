@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+python3 scripts/secret_guard.py --staged
+
+for candidate in \
+  "$repo_root/.husky/pre-commit" \
+  "$repo_root/git-hooks/pre-commit" \
+  "$repo_root/clawdbot/git-hooks/pre-commit"
+do
+  if [ -f "$candidate" ] && [ "$candidate" != "$repo_root/.githooks/pre-commit" ]; then
+    if [ -x "$candidate" ]; then
+      "$candidate"
+    else
+      sh "$candidate"
+    fi
+    break
+  fi
+done

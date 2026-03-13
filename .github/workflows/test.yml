@@ -71,32 +71,76 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Check E2E infrastructure secrets
+        id: preflight
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.E2E_CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.E2E_CF_ACCOUNT_ID }}
+          WORKERS_SUBDOMAIN: ${{ secrets.E2E_WORKERS_SUBDOMAIN }}
+          CF_ACCESS_TEAM_DOMAIN: ${{ secrets.E2E_CF_ACCESS_TEAM_DOMAIN }}
+          R2_ACCESS_KEY_ID: ${{ secrets.E2E_R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.E2E_R2_SECRET_ACCESS_KEY }}
+        run: |
+          missing=()
+          for key in CLOUDFLARE_API_TOKEN CF_ACCOUNT_ID WORKERS_SUBDOMAIN CF_ACCESS_TEAM_DOMAIN R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [ -z "${!key}" ]; then
+              missing+=("$key")
+            fi
+          done
+
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "missing=$(IFS=,; echo "${missing[*]}")" >> "$GITHUB_OUTPUT"
+
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "Missing required E2E secrets: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Skip E2E when infrastructure secrets are unavailable
+        if: steps.preflight.outputs.ready != 'true'
+        run: |
+          echo "## E2E skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Missing secrets: ${{ steps.preflight.outputs.missing }}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Install dependencies
+        if: steps.preflight.outputs.ready == 'true'
         run: npm ci
 
       - name: Install Terraform
+        if: steps.preflight.outputs.ready == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
 
       - name: Install system dependencies
+        if: steps.preflight.outputs.ready == 'true'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg imagemagick bc
 
       - name: Install cctr
+        if: steps.preflight.outputs.ready == 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: cctr
 
       - name: Install plwr
+        if: steps.preflight.outputs.ready == 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: plwr@0.7.2
 
       - name: Install Playwright browsers
+        if: steps.preflight.outputs.ready == 'true'
         run: npm install -g playwright && npx playwright install --with-deps chromium
 
       - name: Run E2E tests (${{ matrix.config.name }})
         id: e2e
+        if: steps.preflight.outputs.ready == 'true'
         continue-on-error: true
         env:
           # Cloud infrastructure credentials (from repo secrets with E2E_ prefix)
@@ -125,7 +169,7 @@ jobs:
 
       - name: Generate video thumbnail
         id: video
-        if: always()
+        if: always() && steps.preflight.outputs.ready == 'true'
         run: |
           if ls /tmp/moltworker-e2e-videos/*.mp4 1>/dev/null 2>&1; then
             for mp4 in /tmp/moltworker-e2e-videos/*.mp4; do
@@ -158,7 +202,7 @@ jobs:
 
       - name: Prepare video for upload
         id: prepare
-        if: always() && steps.video.outputs.has_video == 'true'
+        if: always() && steps.preflight.outputs.ready == 'true' && steps.video.outputs.has_video == 'true'
         run: |
           mkdir -p /tmp/e2e-video-upload/videos/${{ github.run_id }}-${{ matrix.config.name }}
           cp "${{ steps.video.outputs.video_path }}" /tmp/e2e-video-upload/videos/${{ github.run_id }}-${{ matrix.config.name }}/
@@ -167,7 +211,7 @@ jobs:
           echo "thumb_url=https://github.com/${{ github.repository }}/raw/e2e-artifacts-${{ matrix.config.name }}/videos/${{ github.run_id }}-${{ matrix.config.name }}/${{ steps.video.outputs.thumb_name }}" >> $GITHUB_OUTPUT
 
       - name: Upload video to e2e-artifacts branch
-        if: always() && steps.video.outputs.has_video == 'true'
+        if: always() && steps.preflight.outputs.ready == 'true' && steps.video.outputs.has_video == 'true'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -176,7 +220,7 @@ jobs:
           keep_files: true
 
       - name: Delete old video comments
-        if: always() && github.event_name == 'pull_request'
+        if: always() && steps.preflight.outputs.ready == 'true' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
@@ -197,7 +241,7 @@ jobs:
             }
 
       - name: Comment on PR with video
-        if: always() && github.event_name == 'pull_request' && steps.prepare.outputs.video_url
+        if: always() && steps.preflight.outputs.ready == 'true' && github.event_name == 'pull_request' && steps.prepare.outputs.video_url
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -210,7 +254,7 @@ jobs:
             [![E2E Test Video](${{ steps.prepare.outputs.thumb_url }})](${{ steps.prepare.outputs.video_url }})
 
       - name: Add video link to summary
-        if: always()
+        if: always() && steps.preflight.outputs.ready == 'true'
         run: |
           echo "## E2E Test Recording" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -221,5 +265,5 @@ jobs:
           fi
 
       - name: Fail if E2E tests failed
-        if: steps.e2e.outcome == 'failure'
+        if: steps.preflight.outputs.ready == 'true' && steps.e2e.outcome == 'failure'
         run: exit 1
