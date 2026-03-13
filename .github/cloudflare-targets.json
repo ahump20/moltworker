@@ -1,0 +1,16 @@
+{
+  "node_version": "22",
+  "package_manager": "npm",
+  "install_command": "npm ci",
+  "validate_command": "npm run lint && npm run format:check && npm run typecheck && npm test",
+  "targets": [
+    {
+      "id": "worker",
+      "kind": "worker",
+      "working_directory": ".",
+      "project_name": "moltbot-sandbox",
+      "environment": "production",
+      "deploy_command": "npm run deploy"
+    }
+  ]
+}

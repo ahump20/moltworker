@@ -1,0 +1,153 @@
+name: Cloudflare Delivery
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  load-config:
+    runs-on: ubuntu-latest
+    outputs:
+      node_version: ${{ steps.config.outputs.node_version }}
+      package_manager: ${{ steps.config.outputs.package_manager }}
+      install_command: ${{ steps.config.outputs.install_command }}
+      validate_command: ${{ steps.config.outputs.validate_command }}
+      matrix: ${{ steps.config.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Load Cloudflare target config
+        id: config
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads(Path(".github/cloudflare-targets.json").read_text(encoding="utf-8"))
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as handle:
+            handle.write(f"node_version={config.get('node_version', '20')}\n")
+            handle.write(f"package_manager={config.get('package_manager', 'npm')}\n")
+            handle.write("install_command<<EOF\n")
+            handle.write(config.get("install_command", "") + "\nEOF\n")
+            handle.write("validate_command<<EOF\n")
+            handle.write(config.get("validate_command", "") + "\nEOF\n")
+            handle.write(f"matrix={json.dumps({'include': config.get('targets', [])})}\n")
+          PY
+
+  validate:
+    runs-on: ubuntu-latest
+    needs: load-config
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.load-config.outputs.node_version }}
+          cache: ${{ needs.load-config.outputs.package_manager }}
+
+      - name: Setup pnpm
+        if: needs.load-config.outputs.package_manager == 'pnpm'
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@4
+
+      - name: Install dependencies
+        if: needs.load-config.outputs.install_command != ''
+        run: ${{ needs.load-config.outputs.install_command }}
+
+      - name: Validate
+        if: needs.load-config.outputs.validate_command != ''
+        run: ${{ needs.load-config.outputs.validate_command }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [load-config, validate]
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.load-config.outputs.matrix) }}
+    concurrency:
+      group: cloudflare-${{ github.repository }}-${{ matrix.id }}-${{ github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.load-config.outputs.node_version }}
+          cache: ${{ needs.load-config.outputs.package_manager }}
+
+      - name: Setup pnpm
+        if: needs.load-config.outputs.package_manager == 'pnpm'
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@4
+
+      - name: Install dependencies
+        if: needs.load-config.outputs.install_command != ''
+        run: ${{ needs.load-config.outputs.install_command }}
+
+      - name: Deploy target
+        working-directory: ${{ matrix.working_directory }}
+        env:
+          BRANCH: ${{ github.ref_name }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: ${{ matrix.deploy_command }}
+
+      - name: Write deployment record
+        env:
+          TARGET_ID: ${{ matrix.id }}
+          TARGET_KIND: ${{ matrix.kind }}
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+          TARGET_PROJECT_NAME: ${{ matrix.project_name }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          record = {
+            "repo": os.environ["GITHUB_REPOSITORY"],
+            "sha": os.environ["GITHUB_SHA"],
+            "ref": os.environ["GITHUB_REF_NAME"],
+            "target_id": os.environ["TARGET_ID"],
+            "target_type": os.environ["TARGET_KIND"],
+            "target_name": os.environ.get("TARGET_PROJECT_NAME") or os.environ["TARGET_ID"],
+            "environment": os.environ.get("TARGET_ENVIRONMENT") or "production",
+            "status": "success",
+            "deployed_at": datetime.now(timezone.utc).isoformat(),
+            "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+          }
+          path = Path(f"cloudflare-deploy-record-{record['target_id']}.json")
+          path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload deployment record
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflare-deploy-record-${{ matrix.id }}
+          path: cloudflare-deploy-record-${{ matrix.id }}.json

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+range=""
+
+if git rev-parse --verify --quiet '@{upstream}' >/dev/null; then
+  range="$(git rev-parse --abbrev-ref '@{upstream}')..HEAD"
+elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+  range="HEAD~1..HEAD"
+fi
+
+if [ -n "$range" ]; then
+  python3 scripts/secret_guard.py --range "$range"
+else
+  python3 scripts/secret_guard.py --staged
+fi
+
+for candidate in \
+  "$repo_root/.husky/pre-push" \
+  "$repo_root/git-hooks/pre-push" \
+  "$repo_root/clawdbot/git-hooks/pre-push"
+do
+  if [ -f "$candidate" ] && [ "$candidate" != "$repo_root/.githooks/pre-push" ]; then
+    if [ -x "$candidate" ]; then
+      "$candidate"
+    else
+      sh "$candidate"
+    fi
+    break
+  fi
+done
